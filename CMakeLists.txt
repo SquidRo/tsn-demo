@@ -45,6 +45,10 @@ find_package (CJSON REQUIRED)
 include_directories(${CJSON_INCLUDE_DIR})
 LINK_DIRECTORIES(${CJSON_LIBRARIES})
 
+find_package (Hiredis REQUIRED)
+include_directories(${Hiredis_INCLUDE_DIR})
+LINK_DIRECTORIES(${Hiredis_LIBRARIES})
+
 SET(SRC_LIST
         lib/util.c
         lib/svec.c
@@ -70,3 +74,4 @@ target_link_libraries(${PROJECT_NAME} ${LibNL_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${LIBYANG_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${CJSON_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${DBUS_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${Hiredis_LIBRARIES})
