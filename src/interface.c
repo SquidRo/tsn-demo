@@ -177,9 +177,12 @@ void collect_interfaces(struct shash *interfaces)
          idx_p != NULL && idx_p->if_index != 0 && idx_p->if_name != NULL;
          idx_p++)
     {
+// for eth0 test
+#if 0
         if (strstr(idx_p->if_name, "eno") == NULL && strstr(idx_p->if_name, "swp") == NULL) {
             continue;
         }
+#endif
 
         link = rtnl_link_get_by_name(cache, idx_p->if_name);
         if (link != NULL && rtnl_link_get_arptype(link) != 772) {
@@ -775,11 +778,14 @@ struct sset *get_interface_names()
          idx_p != NULL && idx_p->if_index != 0 && idx_p->if_name != NULL;
          idx_p++)
     {
+// for eth0 test
+#if 0
         if (strstr(idx_p->if_name, "eno") == NULL &&
             strstr(idx_p->if_name, "swp") == NULL)
         {
             continue;
         }
+#endif
 
         link = rtnl_link_get_by_name(cache, idx_p->if_name);
         unsigned int arptype = rtnl_link_get_arptype(link);
