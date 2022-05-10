@@ -1,5 +1,6 @@
 #include <unistd.h>
 #include <string.h>
+#include <pthread.h>
 #include "sysrepo.h"
 #include "sysrepo/xpath.h"
 
@@ -234,6 +235,17 @@ cleanup:
     return rc;
 }
 
+void* child(void* data) {
+    char *str = (char*) data;
+
+    for (int i = 0;i < 3;++i) {
+        printf("%s\n", str);
+        sleep(1);
+    }
+
+    pthread_exit(NULL);
+}
+
 int main(int argc, char *argv[])
 {
     struct shash_node *node, *node_next;
@@ -241,6 +253,9 @@ int main(int argc, char *argv[])
     sr_conn_ctx_t *connection = NULL;
     sr_session_ctx_t *session = NULL;
     int rc = SR_ERR_OK;
+
+    pthread_t t;
+    pthread_create(&t, NULL, child, "Child");
 
     log_set_level(LOG_INFO);
 
@@ -322,10 +337,12 @@ int main(int argc, char *argv[])
         Result: oper_speed = 10000
         Result: fec = none
     */
-    {
-        redisContext *c;
 
+    {
+        redisContext    *c;
+        int             is_redis_ok = 0;
         struct timeval timeout = { 1, 500000 }; // 1.5 seconds
+
         c = redisConnectWithTimeout("192.168.40.155", 63795, timeout);
         if (c == NULL || c->err) {
             if (c) {
@@ -335,26 +352,29 @@ int main(int argc, char *argv[])
                 printf("Connection error: can't allocate redis context\n");
             }
         }
-        else
-        {
+        else {
+            is_redis_ok = 1;
             printf("!!! REDIS OK\n");
         }
 
-        redisReply *reply = redisCommand(c, "HGETALL %s", "PORT_TABLE:Ethernet25");
-        if ( reply->type == REDIS_REPLY_ERROR ) {
-            printf( "Error: %s\n", reply->str );
-        } else if ( reply->type != REDIS_REPLY_ARRAY ) {
-            printf( "Unexpected type: %d\n", reply->type );
-        } else {
-            int i;
-            for (i = 0; i < reply->elements; i = i + 2 ) {
-                printf( "Result: %s = %s \n", reply->element[i]->str, reply->element[i + 1]->str );
+        if (is_redis_ok) {
+            redisReply *reply = redisCommand(c, "HGETALL %s", "PORT_TABLE:Ethernet25");
+            if ( reply->type == REDIS_REPLY_ERROR ) {
+                printf( "Error: %s\n", reply->str );
+            } else if ( reply->type != REDIS_REPLY_ARRAY ) {
+                printf( "Unexpected type: %d\n", reply->type );
+            } else {
+                int i;
+                for (i = 0; i < reply->elements; i = i + 2 ) {
+                    printf( "Result: %s = %s \n", reply->element[i]->str, reply->element[i + 1]->str );
+                }
             }
+            freeReplyObject(reply);
         }
-        freeReplyObject(reply);
     }
 
     rc = data_provider(session);
+
 cleanup:
     sr_disconnect(connection);
 
@@ -364,6 +384,8 @@ cleanup:
     shash_destroy(&interfaces);
 
     destroy_interface_names();
+
+    pthread_join(t, NULL);
 
     return 0;
 }

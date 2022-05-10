@@ -49,6 +49,8 @@ find_package (Hiredis REQUIRED)
 include_directories(${Hiredis_INCLUDE_DIR})
 LINK_DIRECTORIES(${Hiredis_LIBRARIES})
 
+find_package (Threads REQUIRED)
+
 SET(SRC_LIST
         lib/util.c
         lib/svec.c
@@ -75,3 +77,4 @@ target_link_libraries(${PROJECT_NAME} ${LIBYANG_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${CJSON_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${DBUS_LIBRARIES})
 target_link_libraries(${PROJECT_NAME} ${Hiredis_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})
