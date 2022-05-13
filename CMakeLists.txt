@@ -66,7 +66,8 @@ SET(SRC_LIST
         src/hardware.c
         src/bridge.c
         src/repo.c
-	src/dbus_util.c
+        src/inf_lm.c
+        src/dbus_util.c
         src/main.c)
 
 ADD_EXECUTABLE(${PROJECT_NAME} ${SRC_LIST})

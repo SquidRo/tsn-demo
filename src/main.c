@@ -10,6 +10,7 @@
 #include "dynamic-string.h"
 #include "lldp.h"
 #include "interface.h"
+#include "inf_lm.h"
 #include "bridge.h"
 #include "hardware.h"
 #include "dbus_util.h"
@@ -223,8 +224,8 @@ static int data_provider(sr_session_ctx_t *session)
 
     while (!exit_application) {
         sleep(1);
-        update_ips(&interfaces, session);
-        update_interfaces_speed(&interfaces, session);
+    //    update_ips(&interfaces, session);
+    //    update_interfaces_speed(&interfaces, session);
     }
 
 cleanup:
@@ -235,16 +236,7 @@ cleanup:
     return rc;
 }
 
-void* child(void* data) {
-    char *str = (char*) data;
-
-    for (int i = 0;i < 3;++i) {
-        printf("%s\n", str);
-        sleep(1);
-    }
-
-    pthread_exit(NULL);
-}
+extern pthread_t tid_inf_lm;
 
 int main(int argc, char *argv[])
 {
@@ -253,9 +245,6 @@ int main(int argc, char *argv[])
     sr_conn_ctx_t *connection = NULL;
     sr_session_ctx_t *session = NULL;
     int rc = SR_ERR_OK;
-
-    pthread_t t;
-    pthread_create(&t, NULL, child, "Child");
 
     log_set_level(LOG_INFO);
 
@@ -343,7 +332,7 @@ int main(int argc, char *argv[])
         int             is_redis_ok = 0;
         struct timeval timeout = { 1, 500000 }; // 1.5 seconds
 
-        c = redisConnectWithTimeout("192.168.40.155", 63795, timeout);
+        c = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
         if (c == NULL || c->err) {
             if (c) {
                 printf("Connection error: %s\n", c->errstr);
@@ -373,6 +362,8 @@ int main(int argc, char *argv[])
         }
     }
 
+    pthread_create(&tid_inf_lm, NULL, inf_lm_thd, &interfaces);
+
     rc = data_provider(session);
 
 cleanup:
@@ -385,8 +376,13 @@ cleanup:
 
     destroy_interface_names();
 
-    pthread_join(t, NULL);
+    {
+        pthread_t tmp_tid = tid_inf_lm;
 
+        tid_inf_lm = 0;
+
+        pthread_join(tmp_tid, NULL);
+    }
     return 0;
 }
 

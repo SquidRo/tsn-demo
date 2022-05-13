@@ -16,6 +16,7 @@
 
 #define BUFFER_LENGTH 1024
 
+//TODO: need bridge command ???
 void get_bridge_vlan(const char *br_name, br_vlan_t *vlan)
 {
     FILE* fp = NULL;
