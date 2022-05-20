@@ -20,6 +20,8 @@ struct interface {
     int          vlan_id;
     int          pvid;
     char        *master_name;
+
+    char        *cntr_oid;   // counter oid for redis
 };
 
 struct address {
@@ -41,6 +43,8 @@ struct interface *interface_create();
 void interface_destroy(struct interface *intf);
 
 void collect_interfaces(struct shash *interfaces);
+void collect_inf_cntr_oid_map(struct shash *interfaces);
+
 void save_interface_running(struct interface *intf, sr_session_ctx_t *session);
 void save_interface_operational(struct interface *interface,
         sr_session_ctx_t *session);
@@ -52,6 +56,15 @@ void update_ips(struct shash *interfaces, sr_session_ctx_t *session);
 void update_interfaces_speed(struct shash *interfaces, sr_session_ctx_t *session);
 
 void interface_statistics_provider(sr_session_ctx_t *session, struct lyd_node **parent);
+
+int interface_statistics_cb(
+    sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+    const char *request_xpath, uint32_t request_id, struct lyd_node **parent, void *private_data);
+
+int interface_op_status_cb(
+    sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+    const char *request_xpath, uint32_t request_id, struct lyd_node **parent, void *private_data);
+
 void interface_oper_status_provider(sr_session_ctx_t *session, struct lyd_node **parent);
 
 struct sset *get_interface_names();

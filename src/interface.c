@@ -28,8 +28,332 @@
 #include "dynamic-string.h"
 #include "sset.h"
 #include "utils.h"
+#include "hiredis/hiredis.h"
+#include "libyang/tree_data.h"
 
-static struct sset *interface_names = NULL;
+
+enum DB_ID {
+    DB_APPL = 0,
+    DB_ASIC,
+    DB_COUNTERS,
+};
+
+#define COUNTER_TABLE_PREFIX        "COUNTERS:"
+#define COUNTERS_PORT_NAME_MAP      "COUNTERS_PORT_NAME_MAP"
+#define PORT_STATUS_TABLE_PREFIX    "PORT_TABLE:"
+#define REDIS_UNIX_SOCKET_PATH      "/var/run/redis/redis.sock"
+
+typedef struct {
+    char *tag;
+    char *key;
+} KEY_MAP_T;
+
+extern struct shash     interfaces;
+
+static struct sset      *interface_names = NULL;
+
+redisContext *get_redis_ctx()
+{
+    redisContext    *redis_ctx = NULL;
+    struct timeval timeout = { 1, 500000 }; // 1.5 seconds
+
+    #if 1 // use unix domain socket
+    redis_ctx = redisConnectUnixWithTimeout(REDIS_UNIX_SOCKET_PATH, timeout);
+    #else // use tcp socket
+    redis_ctx = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
+    #endif
+
+    if (redis_ctx == NULL || redis_ctx->err) {
+        if (redis_ctx) {
+            log_error("Connection error: %s", redis_ctx->errstr);
+            redisFree(redis_ctx);
+            redis_ctx = NULL;
+        } else {
+            log_error("Connection error: can't allocate redis context");
+        }
+    }
+    else {
+        log_info("Connect redis OK");
+    }
+
+    return redis_ctx;
+}
+
+void collect_inf_cntr_oid_map(struct shash *interfaces)
+{
+    redisContext        *redis_ctx;
+    redisReply          *reply;
+    struct interface    *inf_p;
+
+    redis_ctx = get_redis_ctx();
+
+    if (NULL != redis_ctx) {
+        // COUNTERS_DB
+        reply = redisCommand(redis_ctx, "select %d", DB_COUNTERS);
+
+        if (reply->type == REDIS_REPLY_ERROR) {
+            log_error("Error: %s", reply->str);
+        } else {
+            freeReplyObject(reply);
+
+            reply = redisCommand(redis_ctx, "hgetall %s", COUNTERS_PORT_NAME_MAP);
+            if (reply->type != REDIS_REPLY_ARRAY) {
+                log_error("Unexpected type: %d", reply->type);
+            } else {
+                //ex:   elm 0        elm 1
+                //      Ethernet0 -> oid:0x1000000000002
+                int i;
+                for (i = 0; i < reply->elements; i = i + 2 ) {
+                    if (NULL != (inf_p = shash_find_data(interfaces, reply->element[i]->str))) {
+                        inf_p->cntr_oid =  strdup(reply->element[i+1]->str);
+                        log_info("Interface %s -> CNTR_OID %s", inf_p->name, inf_p->cntr_oid);
+                    }
+                }
+            }
+            freeReplyObject(reply);
+        }
+        redisFree(redis_ctx);
+    }
+}
+
+redisReply *get_counter_one(
+    redisContext *redis_ctx, struct interface *inf_p, char *key)
+{
+    redisReply *reply;
+
+    reply = redisCommand(redis_ctx, "hget %s%s %s", COUNTER_TABLE_PREFIX, inf_p->cntr_oid, key);
+
+    if (reply->type !=  REDIS_REPLY_STRING) {
+        log_error("Unexpected type: %d", reply->type);
+        freeReplyObject(reply);
+        reply = NULL;
+    }
+
+    return reply;
+}
+
+void get_inf_statis_one(
+    redisContext *redis_ctx, struct interface *inf_p,
+    const struct ly_ctx *ly_ctx, struct lyd_node **parent)
+{
+    KEY_MAP_T   cntr_map[] = {
+        {"in-octets",           "SAI_PORT_STAT_IF_IN_OCTETS"},
+        {"in-unicast-pkts",     "SAI_PORT_STAT_IF_IN_UCAST_PKTS"},
+        {"in-multicast-pkts",   "SAI_PORT_STAT_IF_IN_NON_UCAST_PKTS"},
+        {"in-discards",         "SAI_PORT_STAT_IF_IN_DISCARDS"},
+        {"in-errors",           "SAI_PORT_STAT_IF_IN_ERRORS"},
+        {"out-octets",          "SAI_PORT_STAT_IF_OUT_OCTETS"},
+        {"out-unicast-pkts",    "SAI_PORT_STAT_IF_OUT_UCAST_PKTS"},
+        {"out-multicast-pkts",  "SAI_PORT_STAT_IF_OUT_NON_UCAST_PKTS"},
+        {"out-discards",        "SAI_PORT_STAT_IF_OUT_DISCARDS"},
+        {"out-errors",          "SAI_PORT_STAT_IF_OUT_ERRORS"}
+    };
+
+    struct ds               path = DS_EMPTY_INITIALIZER;
+    const char              *format = "/ietf-interfaces:interfaces/interface[name='%s']/statistics/%s";
+    char                    *current = NULL;
+    redisReply              *reply;
+    int                     i;
+
+    log_info("inf -> %s", inf_p->name);
+
+    ds_clear(&path);
+    ds_put_format(&path, format, inf_p->name, "discontinuity-time");
+    current = get_iso8601_time();
+
+    lyd_new_path(NULL, ly_ctx, ds_cstr(&path), current, 0, parent);
+
+    for (i =0; i < COUNTOF(cntr_map); i++) {
+        reply = get_counter_one(redis_ctx, inf_p, cntr_map[i].key);
+
+        if (NULL != reply) {
+            ds_clear(&path);
+            ds_put_format(&path, format, inf_p->name, cntr_map[i].tag);
+            lyd_new_path(*parent, NULL, ds_cstr(&path), reply->str, 0, NULL);
+            freeReplyObject(reply);
+        }
+    }
+
+    ds_destroy(&path);
+}
+
+int interface_statistics_cb(
+    sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+    const char *request_xpath, uint32_t request_id, struct lyd_node **parent, void *private_data)
+{
+    //        xpath ex: "/ietf-interfaces:interfaces/interface/statistics"
+    //request_xpath ex: "/ietf-interfaces:interfaces/interface[name='Ethernet0']/statistics"
+    //parent_path   ex: "/ietf-interfaces:interfaces/interface[name='Ethernet0']"
+    struct interface    *inf_p = NULL;
+    redisContext        *redis_ctx;
+    const struct ly_ctx *ly_ctx;
+    const char          *inf_name_p;
+
+    inf_name_p = lyd_get_value(lyd_child(*parent));
+
+    if (  (NULL != inf_name_p)
+        &&(NULL != (inf_p = shash_find_data(&interfaces, inf_name_p)))
+       ) {
+        log_info("Get statis for inf - %s", inf_name_p);
+    } else {
+        char parent_path[80];
+
+        lyd_path(*parent, LYD_PATH_STD, parent_path, sizeof(parent_path));
+        log_error("Interface name not found !!! (parent - %s)", parent_path);
+        // do nothing, bcz it takes too much time to loop all interfaces
+        return SR_ERR_OK;
+    }
+
+#if 0
+    {
+        char key[21];
+
+        if (  (1 == sscanf(parent_path, "%*[^=]='%20[^']s", key))
+            &&(NULL != (inf_p = shash_find_data(&interfaces, key)))
+        ) {
+            log_info("Get statis for inf - %s", key);
+        } else {
+            log_error("Interface name not found !!! (parent - %s)", parent_path);
+            // do nothing, bcz it takes too much time to loop all
+            return SR_ERR_OK;
+        }
+    }
+#endif
+
+    redis_ctx = get_redis_ctx();
+
+    if (NULL != redis_ctx) {
+        // switch to COUNTERS_DB
+        // TODO: check /var/run/redis/sonic-db/database_config.json ???
+        redisReply *reply = redisCommand(redis_ctx, "select %d", DB_COUNTERS);
+
+        if (reply->type == REDIS_REPLY_ERROR) {
+            log_error("Error: %s", reply->str);
+            freeReplyObject(reply);
+            reply = NULL;
+        }
+
+        if (NULL != reply) {
+            freeReplyObject(reply);
+
+            ly_ctx = sr_acquire_context(sr_session_get_connection(session));
+
+            if (NULL != inf_p) {
+                get_inf_statis_one(redis_ctx, inf_p, ly_ctx, parent);
+            } else {
+#if 0 // takes too much time
+                struct shash_node *node;
+
+                SHASH_FOR_EACH(node, &interfaces) {
+                    inf_p = (struct interface*)node->data;
+                    get_inf_statis_one(redis_ctx, inf_p, ly_ctx, parent);
+                }
+#endif
+            }
+
+            sr_release_context(sr_session_get_connection(session));
+        }
+
+        redisFree(redis_ctx);
+    }
+
+    return SR_ERR_OK;
+}
+
+redisReply *get_op_status_one(
+    redisContext *redis_ctx, struct interface *inf_p, char *key)
+{
+    redisReply *reply;
+
+    reply = redisCommand(redis_ctx, "hget %s%s %s", PORT_STATUS_TABLE_PREFIX, inf_p->name, key);
+
+    if (reply->type !=  REDIS_REPLY_STRING ) {
+        log_error("Unexpected type: %d", reply->type);
+        freeReplyObject(reply);
+        reply = NULL;
+    }
+
+    return reply;
+}
+
+void get_inf_op_status_one(
+    redisContext *redis_ctx, struct interface *inf_p,
+    const struct ly_ctx *ly_ctx, struct lyd_node **parent)
+{
+    struct ds               path = DS_EMPTY_INITIALIZER;
+    const char              *format = "/ietf-interfaces:interfaces/interface[name='%s']/oper-status";
+    redisReply              *reply;
+
+    reply = get_op_status_one(redis_ctx, inf_p, "oper_status");
+
+    if (NULL != reply) {
+        ds_clear(&path);
+        ds_put_format(&path, format, inf_p->name);
+        lyd_new_path(NULL, ly_ctx, ds_cstr(&path), reply->str, 0, parent);
+        freeReplyObject(reply);
+    }
+
+    ds_destroy(&path);
+}
+
+int interface_op_status_cb(
+    sr_session_ctx_t *session, uint32_t sub_id, const char *module_name, const char *xpath,
+    const char *request_xpath, uint32_t request_id, struct lyd_node **parent, void *private_data)
+{
+    //        xpath ex: "/ietf-interfaces:interfaces/interface/oper-status"
+    //request_xpath ex: "/ietf-interfaces:interfaces/interface[name='Ethernet0']/oper-status"
+    //parent_path   ex: "/ietf-interfaces:interfaces/interface[name='Ethernet0']"
+    struct interface    *inf_p = NULL;
+    redisContext        *redis_ctx;
+    const struct ly_ctx *ly_ctx;
+    const char          *inf_name_p;
+
+    inf_name_p = lyd_get_value(lyd_child(*parent));
+
+    if (  (NULL != inf_name_p)
+        &&(NULL != (inf_p = shash_find_data(&interfaces, inf_name_p)))
+       ) {
+        log_info("Get statis for inf - %s", inf_name_p);
+    } else {
+        char parent_path[80];
+
+        lyd_path(*parent, LYD_PATH_STD, parent_path, sizeof(parent_path));
+        log_error("Interface name not found !!! (parent - %s)", parent_path);
+        // do nothing, bcz it takes too much time to loop all interfaces
+        return SR_ERR_OK;
+    }
+
+    redis_ctx = get_redis_ctx();
+
+    if (NULL != redis_ctx) {
+        // switch to APPL_DB
+        // TODO: check /var/run/redis/sonic-db/database_config.json ???
+        redisReply *reply = redisCommand(redis_ctx, "select %d", DB_APPL);
+
+        if (reply->type == REDIS_REPLY_ERROR) {
+            log_error("Error: %s", reply->str);
+            freeReplyObject(reply);
+            reply = NULL;
+        }
+
+        if (NULL != reply) {
+            freeReplyObject(reply);
+
+            ly_ctx = sr_acquire_context(sr_session_get_connection(session));
+
+            if (NULL != inf_p) {
+                get_inf_op_status_one(redis_ctx, inf_p, ly_ctx, parent);
+            }
+
+            sr_release_context(sr_session_get_connection(session));
+        }
+
+        redisFree(redis_ctx);
+    }
+
+    return SR_ERR_OK;
+}
+
 
 inline struct interface *interface_create()
 {
@@ -180,7 +504,7 @@ void collect_interfaces(struct shash *interfaces)
     {
 // for eth0 test
 #if 1
-	    //if (strstr(idx_p->if_name, "eth") == NULL) continue;
+            if (strstr(idx_p->if_name, "Ethernet") == NULL) continue;
 #else
         if (strstr(idx_p->if_name, "eno") == NULL && strstr(idx_p->if_name, "swp") == NULL) {
             continue;
@@ -507,6 +831,8 @@ void interface_statistics_provider(sr_session_ctx_t *session, struct lyd_node **
     bool start = true;
     const struct ly_ctx *ly_ctx;
 
+    log_info("TEST\n");
+
     ly_ctx = sr_acquire_context(sr_session_get_connection(session));
 
     sk = nl_socket_alloc();
@@ -826,3 +1152,4 @@ void destroy_interface_names()
         sset_destroy(interface_names);
     }
 }
+

@@ -611,7 +611,7 @@ void lldp_port_provider(sr_session_ctx_t *session, struct lyd_node **parent)
             if (start) {
 //                *parent = lyd_new_path(NULL, sr_get_context(sr_session_get_connection(session)),
 //                                       ds_cstr(&path), lldp->chassis->name, 0, 0);
-		lyd_new_path(NULL, ly_ctx, ds_cstr(&path), lldp->chassis->name, 0, parent);
+                lyd_new_path(NULL, ly_ctx, ds_cstr(&path), lldp->chassis->name, 0, parent);
                 start = false;
             } else {
                 lyd_new_path(*parent, NULL, ds_cstr(&path), lldp->chassis->name, 0, NULL);

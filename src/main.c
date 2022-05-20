@@ -14,12 +14,16 @@
 #include "bridge.h"
 #include "hardware.h"
 #include "dbus_util.h"
-#include "hiredis/hiredis.h"
 
+/* GLOBAL VARIABLE DECLARATIONS
+ */
+struct shash    interfaces;
+volatile int    exit_application = 0;
+
+
+/* STATIC VARIABLE DECLARATIONS
+ */
 static sr_subscription_ctx_t *subscription = NULL;
-
-volatile int exit_application = 0;
-struct shash interfaces;
 
 
 static int provider_cb(
@@ -214,10 +218,10 @@ static int data_provider(sr_session_ctx_t *session)
 #endif
 
     rc = sr_oper_get_subscribe(session, "ietf-interfaces", "/ietf-interfaces:interfaces/interface/statistics",
-                               provider_cb, NULL, SR_SUBSCR_DEFAULT, &subscription);
+                               interface_statistics_cb, NULL, SR_SUBSCR_DEFAULT, &subscription);
 
     rc = sr_oper_get_subscribe(session, "ietf-interfaces", "/ietf-interfaces:interfaces/interface/oper-status",
-                               provider_cb, NULL, SR_SUBSCR_DEFAULT, &subscription);
+                               interface_op_status_cb, NULL, SR_SUBSCR_DEFAULT, &subscription);
 
     rc = sr_oper_get_subscribe(session, "ieee802-dot1ab-lldp", "/ieee802-dot1ab-lldp:lldp/port",
                                provider_cb, NULL, SR_SUBSCR_DEFAULT, &subscription);
@@ -288,12 +292,15 @@ int main(int argc, char *argv[])
     // collect interfaces' info
 #if 1
     collect_interfaces(&interfaces);
+    collect_inf_cntr_oid_map(&interfaces);
     SHASH_FOR_EACH(node, &interfaces) {
         intf = (struct interface*)node->data;
         save_interface_running(intf, session);
     }
 #endif
 
+
+#if 0
     sr_session_switch_ds(session, SR_DS_OPERATIONAL);
     SHASH_FOR_EACH(node, &interfaces) {
         intf = (struct interface*)node->data;
@@ -310,57 +317,7 @@ int main(int argc, char *argv[])
     collect_bridges(&bridges);
     save_bridges(&bridges, session);
     shash_destroy_free_data(&bridges);
-
-    /* sample output :
-        !!! REDIS OK
-        Result: admin_status = up
-        Result: alias = Eth26/1(Port26)
-        Result: index = 26
-        Result: lanes = 54
-        Result: mtu = 9100
-        Result: speed = 10000
-        Result: parent_port = Ethernet25
-        Result: description =
-        Result: oper_status = up
-        Result: autoneg = off
-        Result: oper_speed = 10000
-        Result: fec = none
-    */
-
-    {
-        redisContext    *c;
-        int             is_redis_ok = 0;
-        struct timeval timeout = { 1, 500000 }; // 1.5 seconds
-
-        c = redisConnectWithTimeout("127.0.0.1", 6379, timeout);
-        if (c == NULL || c->err) {
-            if (c) {
-                printf("Connection error: %s\n", c->errstr);
-                redisFree(c);
-            } else {
-                printf("Connection error: can't allocate redis context\n");
-            }
-        }
-        else {
-            is_redis_ok = 1;
-            printf("!!! REDIS OK\n");
-        }
-
-        if (is_redis_ok) {
-            redisReply *reply = redisCommand(c, "HGETALL %s", "PORT_TABLE:Ethernet25");
-            if ( reply->type == REDIS_REPLY_ERROR ) {
-                printf( "Error: %s\n", reply->str );
-            } else if ( reply->type != REDIS_REPLY_ARRAY ) {
-                printf( "Unexpected type: %d\n", reply->type );
-            } else {
-                int i;
-                for (i = 0; i < reply->elements; i = i + 2 ) {
-                    printf( "Result: %s = %s \n", reply->element[i]->str, reply->element[i + 1]->str );
-                }
-            }
-            freeReplyObject(reply);
-        }
-    }
+#endif
 
     pthread_create(&tid_inf_lm, NULL, inf_lm_thd, &interfaces);
 

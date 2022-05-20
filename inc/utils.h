@@ -6,6 +6,10 @@
 
 #include <ifaddrs.h>
 
+
+#define COUNTOF(array) (sizeof(array) / sizeof(array[0]))
+
+
 char *get_ieee_mac_addr(const char *mac);
 
 char *to_ieee_mac_addr(char *mac);
